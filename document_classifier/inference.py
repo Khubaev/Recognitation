@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -17,7 +17,12 @@ from .invoice_fields import (
     extract_invoice_fields,
     project_public_fields,
 )
-from .neural_extract import NeuralFieldExtractor
+from .neural_extract import (
+    NeuralFieldExtractor,
+    VllmNeuralFieldExtractor,
+    create_neural_field_extractor,
+    extract_backend_is_vllm,
+)
 
 MAX_INFER_CHARS = 8000
 
@@ -74,17 +79,12 @@ class DocumentClassifier:
             i: DOC_LABELS[i] for i in range(len(DOC_LABELS))
         }
 
-        self._neural: Optional[NeuralFieldExtractor] = None
+        self._neural: Optional[Union[NeuralFieldExtractor, VllmNeuralFieldExtractor]] = None
         if use_neural_extract:
             ec = extract_checkpoint
             if ec is None and DEFAULT_EXTRACT_CKPT.is_dir():
                 ec = DEFAULT_EXTRACT_CKPT
-            if ec is not None and Path(ec).is_dir():
-                try:
-                    if (Path(ec) / "config.json").exists():
-                        self._neural = NeuralFieldExtractor(Path(ec), device=str(self.device))
-                except Exception:
-                    self._neural = None
+            self._neural = create_neural_field_extractor(ec, device=str(self.device))
 
         # merge | neural_only | neural_trained | regex_only
         # neural_trained — только дообученный seq2seq, без regex и без merge
@@ -101,6 +101,11 @@ class DocumentClassifier:
             self.fields_mode = fields_mode
 
         if self.fields_mode == "neural_trained" and not self._neural:
+            if extract_backend_is_vllm():
+                raise ValueError(
+                    "Режим neural_trained с vLLM: задайте VLLM_OPENAI_BASE и VLLM_MODEL (или EXTRACT_BACKEND=vllm). "
+                    "Проверьте доступность сервера.",
+                )
             raise ValueError(
                 "Режим neural_trained требует чекпоинт извлечения (seq2seq): "
                 "каталог с config.json, например checkpoints/invoice_extract.",

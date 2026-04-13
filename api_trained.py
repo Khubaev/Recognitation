@@ -43,6 +43,7 @@ from transformers import AutoConfig
 from document_classifier.config import DEFAULT_MODEL_NAME
 from document_classifier.inference import DocumentClassifier
 from document_classifier.extract import ocr_yandex_bytes_for_test
+from document_classifier.neural_extract import extract_backend_is_vllm
 
 # Базовая seq2seq из train_extract.py (если в config нет явной ссылки)
 DEFAULT_EXTRACT_BASE_MODEL = "google/flan-t5-small"
@@ -147,31 +148,51 @@ def _build_pipeline_meta() -> NeuralPipelineInfo:
         ext_basis = "Режим API_FIELDS_MODE=regex_only — seq2seq не применяется."
         ext_task = "эвристики: регулярные выражения (invoice_fields)"
     else:
-        try:
-            ec = AutoConfig.from_pretrained(ext_path)
-            ext_type = getattr(ec, "model_type", None) or "unknown"
-            ext_arch = _safe_architectures(ec)
-        except Exception:
-            ext_type, ext_arch = "unknown", None
+        if extract_backend_is_vllm():
+            vbase = (os.environ.get("VLLM_OPENAI_BASE") or "").strip()
+            vmodel = (os.environ.get("VLLM_MODEL") or "").strip()
+            ext_type, ext_arch = "vllm", None
+            merge_note = (
+                "Нейросеть (seq2seq через vLLM) для полей + эвристики regex, если модель не заполнила поле."
+                if API_FIELDS_MODE == "merge"
+                else "Только seq2seq через vLLM для полей, без regex."
+            )
+            ext_checkpoint = f"{vbase} (model={vmodel})" if vbase else "(vLLM)"
+            ext_basis = (
+                "Инференс через OpenAI-совместимый API vLLM на удалённом сервере; "
+                "локальный каталог seq2seq не используется."
+            )
+            ext_task = "seq2seq (vLLM): текст счёта → JSON реквизитов"
+        else:
+            try:
+                ec = AutoConfig.from_pretrained(ext_path)
+                ext_type = getattr(ec, "model_type", None) or "unknown"
+                ext_arch = _safe_architectures(ec)
+            except Exception:
+                ext_type, ext_arch = "unknown", None
 
-        merge_note = (
-            "Нейросеть (seq2seq) для полей + эвристики regex, если модель не заполнила поле."
-            if API_FIELDS_MODE == "merge"
-            else "Только seq2seq для полей, без regex."
-        )
-        ext_checkpoint = ext_path
-        ext_basis = (
-            f"База: предобученная seq2seq (типичный старт: {DEFAULT_EXTRACT_BASE_MODEL}), "
-            "дообучение на data/extract_train.jsonl."
-        )
-        ext_task = "seq2seq: текст счёта → JSON реквизитов"
+            merge_note = (
+                "Нейросеть (seq2seq) для полей + эвристики regex, если модель не заполнила поле."
+                if API_FIELDS_MODE == "merge"
+                else "Только seq2seq для полей, без regex."
+            )
+            ext_checkpoint = ext_path
+            ext_basis = (
+                f"База: предобученная seq2seq (типичный старт: {DEFAULT_EXTRACT_BASE_MODEL}), "
+                "дообучение на data/extract_train.jsonl."
+            )
+            ext_task = "seq2seq: текст счёта → JSON реквизитов"
 
     summary = (
         "Тип документа — дообученный классификатор. "
         + (
             "Реквизиты — только эвристики по тексту (без seq2seq)."
             if API_FIELDS_MODE == "regex_only"
-            else "Реквизиты — дообученная seq2seq и/или эвристики (см. field_extraction_note)."
+            else (
+                "Реквизиты — seq2seq через vLLM и/или эвристики (см. field_extraction_note)."
+                if extract_backend_is_vllm()
+                else "Реквизиты — дообученная seq2seq и/или эвристики (см. field_extraction_note)."
+            )
         )
     )
 
@@ -213,10 +234,11 @@ def _load_models() -> None:
             f"Нет чекпоинта классификатора: {DEFAULT_CLASSIFIER}. Обучите: py -3 train.py ...",
         )
     use_neural_fields = API_FIELDS_MODE != "regex_only"
-    if use_neural_fields and not (DEFAULT_EXTRACT / "config.json").is_file():
+    if use_neural_fields and not extract_backend_is_vllm() and not (DEFAULT_EXTRACT / "config.json").is_file():
         raise RuntimeError(
             f"Нет чекпоинта извлечения: {DEFAULT_EXTRACT} (нужен config.json). "
-            "Обучите: py -3 train_extract.py — или задайте API_FIELDS_MODE=regex_only (только эвристики).",
+            "Обучите: py -3 train_extract.py — или подключите vLLM (VLLM_OPENAI_BASE + VLLM_MODEL, либо EXTRACT_BACKEND=vllm), "
+            "или задайте API_FIELDS_MODE=regex_only (только эвристики).",
         )
     _clf = DocumentClassifier(
         DEFAULT_CLASSIFIER,
