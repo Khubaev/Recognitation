@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Распознавание: параметры и текст</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3d8bfd;
+      --mark: rgba(61, 139, 253, 0.35);
+      --mark-hover: rgba(255, 220, 80, 0.45);
+      --border: #2a3544;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    h1 { font-size: 1.1rem; font-weight: 600; margin: 0; }
+    .wrap { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 0; min-height: calc(100vh - 56px); }
+    @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+    .panel {
+      border-right: 1px solid var(--border);
+      padding: 1rem;
+      overflow: auto;
+      max-height: calc(100vh - 56px);
+    }
+    .panel.text-panel {
+      padding: 1rem 1.25rem;
+      overflow: auto;
+      background: #121920;
+    }
+    label.file {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+      padding: 0.5rem 0.75rem;
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    label.file:hover { border-color: var(--accent); color: var(--text); }
+    button.run {
+      margin-left: 0.5rem;
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.run:disabled { opacity: 0.5; cursor: not-allowed; }
+    .mode-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 1rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .mode-row label { cursor: pointer; display: inline-flex; align-items: center; gap: 0.35rem; user-select: none; }
+    .mode-row input { accent-color: var(--accent); }
+    .mode-label { color: var(--text); font-weight: 500; margin-right: 0.25rem; }
+    .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.75rem; line-height: 1.4; }
+    .params { margin-top: 1rem; }
+    .param-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.5rem;
+      padding: 0.45rem 0.5rem;
+      border-radius: 6px;
+      cursor: default;
+      border: 1px solid transparent;
+    }
+    .param-row:hover { background: rgba(61, 139, 253, 0.12); border-color: rgba(61, 139, 253, 0.35); }
+    .param-row.active { background: rgba(61, 139, 253, 0.2); border-color: var(--accent); }
+    .param-name { color: var(--muted); font-size: 0.8rem; word-break: break-word; }
+    .param-val { font-size: 0.85rem; text-align: right; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .section-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 1rem 0 0.35rem; }
+    pre.doc {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      color: #c8d4e0;
+    }
+    pre.doc mark.hl {
+      background: transparent;
+      padding: 0 1px;
+      border-radius: 2px;
+    }
+    pre.doc mark.hl.on {
+      background: var(--mark-hover);
+      box-shadow: 0 0 0 1px rgba(255, 200, 80, 0.5);
+    }
+    .err { color: #f87171; font-size: 0.9rem; margin-top: 0.75rem; }
+    .empty { color: var(--muted); font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Распознавание первички</h1>
+    <label class="file">
+      <input type="file" id="file" accept=".pdf,.docx,.xlsx,.xls,.txt,.csv,.png,.jpg,.jpeg,image/png,image/jpeg" hidden />
+      <span id="fileLabel">Выбрать файл…</span>
+    </label>
+    <button type="button" class="run" id="run" disabled>Распознать</button>
+    <span id="status" style="color:var(--muted);font-size:0.85rem;"></span>
+    <div class="mode-row" role="group" aria-label="Режим извлечения текста">
+      <span class="mode-label">Текст для моделей:</span>
+      <label><input type="radio" name="texmode" value="auto" checked /> Авто</label>
+      <label><input type="radio" name="texmode" value="local" /> Только локально</label>
+      <label><input type="radio" name="texmode" value="ocr" /> Всегда OCR (Yandex)</label>
+    </div>
+  </header>
+  <div class="wrap">
+    <div class="panel">
+      <div class="hint">
+        Наведите курсор на параметр — соответствующий фрагмент в тексте справа подсветится (поиск по точному вхождению значения).
+        Режим «Текст для моделей»: <strong>Авто</strong> — для PDF при настроенных <code>OCR_YANDEX_*</code> тот же Yandex Vision, что и для JPEG; Excel/txt/csv — локально; если OCR недоступен — текстовый слой PDF.
+        <strong>Только локально</strong> — без Yandex (для PNG/JPEG недоступно).
+        <strong>Всегда OCR</strong> — принудительно Vision для PDF/картинок (при ошибке OCR — ошибка запроса).
+      </div>
+      <div class="params" id="params"><p class="empty">Загрузите документ и нажмите «Распознать».</p></div>
+    </div>
+    <div class="panel text-panel">
+      <div class="section-title">Текст документа (извлечённый)</div>
+      <pre class="doc" id="doc"><span class="empty">Текст появится после распознавания.</span></pre>
+    </div>
+  </div>
+  <script>
+    const cssEsc =
+      typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? (s) => CSS.escape(s)
+        : (s) => String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
+    const $ = (s) => document.querySelector(s);
+    const fileInput = $("#file");
+    const runBtn = $("#run");
+    const paramsEl = $("#params");
+    const docEl = $("#doc");
+    const statusEl = $("#status");
+    const fileLabel = $("#fileLabel");
+
+    function selectedTextMode() {
+      const r = document.querySelector('input[name="texmode"]:checked');
+      return r ? r.value : "auto";
+    }
+
+    function esc(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function flattenFields(data) {
+      const out = {};
+      const fields = data.fields || {};
+      for (const k of Object.keys(fields)) {
+        if (k === "items") continue;
+        const v = fields[k];
+        if (v !== null && v !== undefined && String(v).trim() !== "") out[k] = String(v);
+      }
+      const items = fields.items || [];
+      if (Array.isArray(items)) {
+        items.forEach((it, i) => {
+          if (!it || typeof it !== "object") return;
+          Object.entries(it).forEach(([ik, iv]) => {
+            const s = iv === null || iv === undefined ? "" : String(iv).trim();
+            if (s) out[`Позиция ${i + 1} · ${ik}`] = s;
+          });
+        });
+      }
+      return out;
+    }
+
+    function buildHighlights(sourceText, flat) {
+      const entries = [];
+      for (const [key, val] of Object.entries(flat)) {
+        const t = String(val).trim();
+        if (t.length < 2) continue;
+        let i = sourceText.indexOf(t);
+        if (i === -1) {
+          const a = sourceText.toLowerCase();
+          const b = t.toLowerCase();
+          i = a.indexOf(b);
+        }
+        if (i !== -1) entries.push({ start: i, end: i + t.length, key, len: t.length });
+      }
+      entries.sort((a, b) => b.len - a.len);
+      const picked = [];
+      for (const e of entries) {
+        const overlap = picked.some(
+          (p) => !(e.end <= p.start || e.start >= p.end)
+        );
+        if (!overlap) picked.push(e);
+      }
+      picked.sort((a, b) => a.start - b.start);
+      return picked;
+    }
+
+    function renderDoc(sourceText, highlights) {
+      if (!sourceText) {
+        docEl.innerHTML = '<span class="empty">Нет текста (пустой PDF / нужен OCR).</span>';
+        return;
+      }
+      let html = "";
+      let pos = 0;
+      for (const h of highlights) {
+        html += esc(sourceText.slice(pos, h.start));
+        html +=
+          '<mark class="hl" data-k="' +
+          esc(h.key) +
+          '">' +
+          esc(sourceText.slice(h.start, h.end)) +
+          "</mark>";
+        pos = h.end;
+      }
+      html += esc(sourceText.slice(pos));
+      docEl.innerHTML = html;
+    }
+
+    function renderParams(flat) {
+      paramsEl.innerHTML = "";
+      const keys = Object.keys(flat);
+      if (!keys.length) {
+        paramsEl.innerHTML = '<p class="empty">Нет заполненных полей.</p>';
+        return;
+      }
+      for (const k of keys) {
+        const row = document.createElement("div");
+        row.className = "param-row";
+        row.dataset.key = k;
+        row.innerHTML =
+          '<div class="param-name">' +
+          esc(k) +
+          '</div><div class="param-val" title="' +
+          esc(flat[k]) +
+          '">' +
+          esc(flat[k]) +
+          "</div>";
+        row.addEventListener("mouseenter", () => {
+          row.classList.add("active");
+          document.querySelectorAll("mark.hl").forEach((m) => m.classList.remove("on"));
+          document
+            .querySelectorAll('mark.hl[data-k="' + cssEsc(k) + '"]')
+            .forEach((m) => {
+              m.classList.add("on");
+              m.scrollIntoView({ block: "nearest", behavior: "smooth" });
+            });
+        });
+        row.addEventListener("mouseleave", () => {
+          row.classList.remove("active");
+          document
+            .querySelectorAll('mark.hl[data-k="' + cssEsc(k) + '"]')
+            .forEach((m) => m.classList.remove("on"));
+        });
+        paramsEl.appendChild(row);
+      }
+    }
+
+    fileInput.addEventListener("change", () => {
+      const f = fileInput.files && fileInput.files[0];
+      runBtn.disabled = !f;
+      fileLabel.textContent = f ? f.name : "Выбрать файл…";
+    });
+
+    runBtn.addEventListener("click", async () => {
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      runBtn.disabled = true;
+      statusEl.textContent = "Загрузка…";
+      paramsEl.innerHTML = "";
+      docEl.innerHTML = '<span class="empty">…</span>';
+
+      const fd = new FormData();
+      fd.append("file", f);
+
+      try {
+        const mode = selectedTextMode();
+        const url =
+          "/predict?include_source_text=true&text_extract_mode=" +
+          encodeURIComponent(mode);
+        const res = await fetch(url, { method: "POST", body: fd });
+        const data = await res.json();
+        if (!res.ok) {
+          const d = data.detail;
+          let msg;
+          if (Array.isArray(d)) {
+            msg = d.map((x) => (x && x.msg) || JSON.stringify(x)).join("; ");
+          } else {
+            msg = d || res.statusText || "Ошибка";
+          }
+          throw new Error(typeof msg === "string" ? msg : String(msg));
+        }
+        const one = Array.isArray(data) ? data[0] : data;
+        const src = one.source_text || "";
+        const flat = flattenFields(one);
+        const hl = buildHighlights(src, flat);
+        renderParams(flat);
+        renderDoc(src, hl);
+        if (one.error) {
+          const e = document.createElement("div");
+          e.className = "err";
+          e.textContent = "Замечание: " + one.error;
+          paramsEl.prepend(e);
+        }
+        statusEl.textContent = "Готово · символов текста: " + (one.extracted_chars || 0);
+      } catch (e) {
+        statusEl.textContent = "";
+        paramsEl.innerHTML =
+          '<p class="err">' + esc(e.message || String(e)) + "</p>";
+        docEl.innerHTML = '<span class="empty">—</span>';
+      } finally {
+        runBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
