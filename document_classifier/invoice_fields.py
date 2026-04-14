@@ -143,6 +143,10 @@ def _strip_supplier_name_suffix(s: str) -> str:
     for pat in (
         r",\s*тел\.",
         r"\s+тел\.\s*[\d\+\-\(\)\s]{7,22}",
+        r"\s+Получатель\s*[:：]",
+        r"\s+Покупатель\s*[:：]",
+        r"\s+Заказчик\s*[:：]",
+        r"\s+Отправитель\s*[:：]",
         r"\s+СЕВЕРО[-\s]?ЗАПАДНЫЙ\s+БАНК",
         r"\s+БАНК\s+ПАО",
         r"\s+ПАО\s+СБЕРБАНК",
@@ -201,9 +205,26 @@ def project_public_fields(internal: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def _is_likely_bank_rs_number(s: str) -> bool:
+    """Расчётный/корр. счёт (часто 20 цифр), не номер счёта на оплату."""
+    d = re.sub(r"\D", "", str(s or ""))
+    return bool(d) and d.isdigit() and 18 <= len(d) <= 22
+
+
 def _extract_invoice_number(text: str) -> str:
     """Номер счёта в шапке: «Счёт на оплату № 13», «СЧЕТ НА ЗАЛОГ … № 5717 от»."""
     head = text[:4000] if text else ""
+    # Сначала явный заголовок документа — не путать с «Сч. №» банковского счёта (20 цифр)
+    m = re.search(
+        r"(?:Сч[её]т|СЧЕТ)\s+на\s+оплату\s*(?:№|N[oо]\.?)\s*([\dA-Za-zА-Яа-яЁё0-9][\dA-Za-zА-Яа-яЁё\-/]*)",
+        head,
+        re.I,
+    )
+    if m:
+        s = _norm(m.group(1)).strip()
+        s = re.split(r"\s+от\s+", s, maxsplit=1, flags=re.I)[0].strip()
+        if s and not _is_likely_bank_rs_number(s):
+            return normalize_invoice_number_ocr(s[:120])
     # Между «Счёт» и «№» может быть длинная фраза (залог, тара и т.д.)
     m = re.search(
         r"(?:Сч[её]т|СЧЕТ)\s+[^\n]{0,400}?(?:№|N[oо]\.?)\s*([\dA-Za-zА-Яа-яЁё][\dA-Za-zА-Яа-яЁё\-/]*)(?:\s+от\b|\s*\n|$)",
@@ -213,7 +234,8 @@ def _extract_invoice_number(text: str) -> str:
     if m:
         s = _norm(m.group(1)).strip()
         s = re.split(r"\s+от\s+", s, maxsplit=1, flags=re.I)[0].strip()
-        return normalize_invoice_number_ocr(s[:120])
+        if not _is_likely_bank_rs_number(s):
+            return normalize_invoice_number_ocr(s[:120])
     m = re.search(
         r"(?:Сч[её]т|СЧЕТ)(?:\s+на\s+оплату)?\s*(?:№|N[oо]\.?)\s*([^\n]+?)(?:\s+от\s+|\n|$)",
         head,
@@ -222,10 +244,13 @@ def _extract_invoice_number(text: str) -> str:
     if m:
         s = _norm(m.group(1))
         s = re.split(r"\s+от\s+", s, maxsplit=1, flags=re.I)[0].strip()
-        return normalize_invoice_number_ocr(s[:120])
+        if not _is_likely_bank_rs_number(s):
+            return normalize_invoice_number_ocr(s[:120])
     m = re.search(r"(?:^|\n)\s*№\s*(\d[\d\w\-/]*)\s+от\s+", head, re.I)
     if m:
-        return normalize_invoice_number_ocr(m.group(1).strip()[:120])
+        cand = m.group(1).strip()
+        if not _is_likely_bank_rs_number(cand):
+            return normalize_invoice_number_ocr(cand[:120])
     # Буквенно-цифровой номер (напр. СКЗ00021097) рядом со «Счёт … №»
     m = re.search(
         r"(?:Сч[её]т|СЧЕТ)[^\n]{0,200}?(?:№|N[oо]\.?)\s*([A-Za-zА-Яа-яЁё]{1,12}[\dA-Za-zА-Яа-яЁё\-/]*)",
@@ -287,13 +312,23 @@ def _extract_invoice_date(text: str) -> str:
 def _extract_itogo_total(text: str) -> str:
     """Итоговая сумма к оплате (не сумма строки таблицы)."""
     t = text or ""
+    # Если есть итог "с НДС", он приоритетнее обычного "Итого"
+    for pat in (
+        r"(?:Итого|Всего)\s+с\s+НДС\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)",
+        r"(?:Сумма|Итого)\s+с\s+НДС\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)",
+    ):
+        m = re.search(pat, t, re.I)
+        if m:
+            s = m.group(1).replace("\xa0", " ").strip()
+            s = re.sub(r"\s+", "", s)
+            return s[:32]
+
     for pat in (
         # «ИТОГО К ОПЛАТЕ: 8 858,00» — раньше ловилось только «Итого» и ломалось на «К ОПЛАТЕ»
         r"(?:Итого\s+к\s+оплате)\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)\s*(?:руб|₽)?",
         r"(?:Итого|Всего\s+к\s+оплате|К\s+оплате)\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)\s*(?:руб|₽)?",
         r"(?:Всего)\s+(?:наименований\s+\d+\s+)?на\s+сумму\s+([\d\s\u00a0]+(?:[,.]\d{2})?)",
-        r"(?:Сумма|Итого)\s+(?:с\s+НДС|по\s+сч[её]ту)\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)",
-        r"(?:Всего|Итого)\s+с\s+НДС\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)",
+        r"(?:Сумма|Итого)\s+по\s+сч[её]ту\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)",
         r"(?:К\s+оплате|Оплатить)\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)\s*(?:руб|₽)?",
     ):
         m = re.search(pat, t, re.I)
@@ -472,6 +507,13 @@ def _is_bad_recipient(s: str) -> bool:
         return True
     if re.match(r"^сч[её]т\s+№", s, re.I):
         return True
+    # Юридические формулировки из оферты/условий вместо названия контрагента
+    if re.search(
+        r"(обязует(?:ся|ься)\s+постав|обязует(?:ся|ься)\s+оплат|обязуется\s+принять|в\s+соответствии\s+с\s+настоящ)",
+        low,
+        re.I,
+    ):
+        return True
     # Фрагмент из таблицы/колонок (часто подставляет LLM вместо организации)
     if re.search(r"заказной\s+товар", low):
         return True
@@ -642,14 +684,14 @@ def _trim_party_block(s: str, max_len: int = 400) -> str:
 
 def _entity_name_near_inn(text: str, inn: str) -> str:
     """
-    Наименование из «Получатель: …» / «Отправитель: …», если в следующих строках указан этот ИНН
+    Наименование из «Получатель: …» / «Отправитель: …» / «Покупатель: …», если в следующих строках указан этот ИНН
     (типично для транспортных/сервисных счетов без слова «Поставщик»).
     """
     if not inn or not text:
         return ""
     t = text
     for m in re.finditer(
-        r"(?:Получатель|Отправитель|Поставщик|Исполнитель|Продавец)\s*[:\s]+(.+?)(?=\n\s*(?:ИНН|ИНН/КПП|Инн|КПП|БИК|р[/\\]?с)|\n\n|\Z)",
+        r"(?:Получатель|Отправитель|Поставщик|Исполнитель|Продавец|Покупатель|Заказчик)\s*[:\s]+(.+?)(?=\n\s*(?:ИНН|ИНН/КПП|Инн|КПП|БИК|р[/\\]?с)|\n\n|\Z)",
         t,
         re.I | re.DOTALL,
     ):
@@ -666,7 +708,7 @@ def _entity_name_near_inn(text: str, inn: str) -> str:
     ):
         prev = t[max(0, m.start() - 900) : m.start()]
         for pm in re.finditer(
-            r"(?:Получатель|Отправитель|Поставщик|Исполнитель)\s*[:\s]+(.+?)(?:\n|$)",
+            r"(?:Получатель|Отправитель|Поставщик|Исполнитель|Покупатель|Заказчик)\s*[:\s]+(.+?)(?:\n|$)",
             prev,
             re.I,
         ):
@@ -1036,6 +1078,8 @@ def extract_invoice_fields(text: str) -> Dict[str, Any]:
     elif len(kpps) == 1:
         kpp_sup = kpps[0]
 
+    if _is_bad_recipient(supplier):
+        supplier = ""
     if not supplier.strip() and inn_sup:
         supplier = _entity_name_near_inn(full, inn_sup) or supplier
 

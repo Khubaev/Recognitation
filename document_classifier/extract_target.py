@@ -9,6 +9,7 @@ from .invoice_fields import (
     FIELD_LABELS,
     _is_bad_bank_name,
     _is_bad_recipient,
+    _is_likely_bank_rs_number,
     is_itogo_amount_in_words,
     joined_fields_from_items,
 )
@@ -318,6 +319,11 @@ def merge_extracted(neural: Dict[str, Any], regex: Dict[str, Any]) -> Dict[str, 
 
         if k == "Итого":
             if is_itogo_amount_in_words(ns) and rs:
+                out[k] = rs
+                continue
+
+        if k == "Номер счета":
+            if _is_likely_bank_rs_number(ns) and rs and not _is_likely_bank_rs_number(rs):
                 out[k] = rs
                 continue
 
