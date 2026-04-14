@@ -44,6 +44,62 @@ def _norm(s: str) -> str:
     return re.sub(r"[ \t]+", " ", s.replace("\r\n", "\n").replace("\r", "\n")).strip()
 
 
+# Родительный падеж («13 апреля») + часть именительного для дат в тексте
+_RU_MONTH_TO_MM: Dict[str, str] = {
+    "января": "01",
+    "февраля": "02",
+    "марта": "03",
+    "апреля": "04",
+    "мая": "05",
+    "июня": "06",
+    "июля": "07",
+    "августа": "08",
+    "сентября": "09",
+    "октября": "10",
+    "ноября": "11",
+    "декабря": "12",
+    "январь": "01",
+    "февраль": "02",
+    "март": "03",
+    "апрель": "04",
+    "май": "05",
+    "июнь": "06",
+    "июль": "07",
+    "август": "08",
+    "сентябрь": "09",
+    "октябрь": "10",
+    "ноябрь": "11",
+    "декабрь": "12",
+}
+
+
+def normalize_date_display_to_ddmmyyyy(s: str) -> str:
+    """
+    «13 апреля 2026» → «13.04.2026»; уже числовые даты — с ведущими нулями.
+    Неизвестный формат возвращается как есть (после _norm).
+    """
+    s = _norm(str(s or "").strip())
+    if not s:
+        return ""
+    s = re.sub(r"\s*г\.?\s*$", "", s, flags=re.I).strip()
+    m = re.match(r"^(\d{1,2})[./](\d{1,2})[./](\d{2,4})$", s)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), m.group(3)
+        if len(y) == 2:
+            yi = int(y)
+            y = f"20{yi:02d}" if yi < 70 else f"19{yi:02d}"
+        else:
+            y = str(y)
+        return f"{d:02d}.{mo:02d}.{y}"
+    m2 = re.match(r"^(\d{1,2})\s+([а-яё]+)\s+(\d{4})$", s, re.I)
+    if m2:
+        d, mon_w, y = int(m2.group(1)), m2.group(2).lower(), m2.group(3)
+        mm = _RU_MONTH_TO_MM.get(mon_w)
+        if mm:
+            return f"{d:02d}.{mm}.{y}"
+    return s
+
+
 def normalize_invoice_number_ocr(s: str) -> str:
     """
     Правки типичных путаниц OCR в цифровой части номера (от первой цифры до конца).
@@ -105,7 +161,7 @@ def project_public_fields(internal: Dict[str, Any]) -> Dict[str, str]:
     name = supplier_display_name(supplier_line)
     total = str(internal.get("Итого") or "").strip()
     inv_no = normalize_invoice_number_ocr(str(internal.get("Номер счета") or "").strip())
-    inv_dt = str(internal.get("Дата счета") or "").strip()
+    inv_dt = normalize_date_display_to_ddmmyyyy(str(internal.get("Дата счета") or "").strip())
     return {
         "ИНН Поставщика": inn,
         "Наименование поставщика": name,
@@ -116,8 +172,18 @@ def project_public_fields(internal: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _extract_invoice_number(text: str) -> str:
-    """Номер счёта в шапке: «Счёт на оплату № 13», «Счет No 13», «СЧЕТ № 5»."""
+    """Номер счёта в шапке: «Счёт на оплату № 13», «СЧЕТ НА ЗАЛОГ … № 5717 от»."""
     head = text[:4000] if text else ""
+    # Между «Счёт» и «№» может быть длинная фраза (залог, тара и т.д.)
+    m = re.search(
+        r"(?:Сч[её]т|СЧЕТ)\s+[^\n]{0,400}?(?:№|N[oо]\.?)\s*([\dA-Za-zА-Яа-яЁё][\dA-Za-zА-Яа-яЁё\-/]*)(?:\s+от\b|\s*\n|$)",
+        head,
+        re.I,
+    )
+    if m:
+        s = _norm(m.group(1)).strip()
+        s = re.split(r"\s+от\s+", s, maxsplit=1, flags=re.I)[0].strip()
+        return normalize_invoice_number_ocr(s[:120])
     m = re.search(
         r"(?:Сч[её]т|СЧЕТ)(?:\s+на\s+оплату)?\s*(?:№|N[oо]\.?)\s*([^\n]+?)(?:\s+от\s+|\n|$)",
         head,
@@ -154,6 +220,14 @@ def _extract_invoice_number(text: str) -> str:
 def _extract_invoice_date(text: str) -> str:
     """Дата рядом со счётом: от 28.03.2026, от 28 марта 2026 г."""
     head = text[:12000] if text else ""
+    # «СЧЕТ … № 5717 от 13 апреля 2026» — длинный текст между «Счёт» и «№»
+    m = re.search(
+        r"(?:Сч[её]т|СЧЕТ)[^\n]{0,400}?(?:№|N[oо]\.?)\s*[\dA-Za-zА-Яа-яЁё\-/]+\s+от\s+(\d{1,2}\s+[а-яё]+\s+\d{4})\s*г?\.?",
+        head,
+        re.I,
+    )
+    if m:
+        return _norm(m.group(1))[:80]
     # Длинная строка «Счет №26-… от 19.03.2026 г.» — до 200 символов между «Счет» и «от»
     m = re.search(
         r"(?:Сч[её]т|СЧЕТ)[^\n]{0,220}?\s+от\s+(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4})",
