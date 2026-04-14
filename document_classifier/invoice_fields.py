@@ -200,6 +200,26 @@ def _extract_itogo_total(text: str) -> str:
     return ""
 
 
+def is_itogo_amount_in_words(s: str) -> bool:
+    """
+    Сумма прописью («Семь тысяч … рублей … копеек»), а не число из строки «Итого к оплате».
+    Нужно, чтобы merge не предпочитал такой ответ LLM числовому regex.
+    """
+    t = _norm(str(s or "").strip())
+    if len(t) < 16:
+        return False
+    low = t.lower()
+    # Уже цифры + копейки (как в документе)
+    if re.search(r"\d\s*[\d\s\u00a0]*[,.]\s*\d{1,2}", t) and len(t) < 45:
+        return False
+    if re.match(r"^[\d\s\u00a0,.]+(?:руб|₽)?\.?\s*$", t, re.I):
+        return False
+    if "рубл" not in low and "копе" not in low:
+        return False
+    letters = len(re.findall(r"[а-яёА-ЯЁ]", t))
+    return letters >= 10
+
+
 def _first_match(patterns: List[str], text: str, flags: int = re.IGNORECASE | re.MULTILINE) -> str:
     for pat in patterns:
         m = re.search(pat, text, flags)
@@ -347,6 +367,14 @@ def _is_bad_recipient(s: str) -> bool:
     if re.search(r"сч[её]т\s+на\s+оплату", s, re.I):
         return True
     if re.match(r"^сч[её]т\s+№", s, re.I):
+        return True
+    # Фрагмент из таблицы/колонок (часто подставляет LLM вместо организации)
+    if re.search(r"заказной\s+товар", low):
+        return True
+    if re.match(r"^[A-Za-zА-Яа-яЁё0-9]{1,4}\s*,\s*[A-Za-zА-Яа-яЁё0-9]{1,4}\b", s) and re.search(
+        r"товар|постав",
+        low,
+    ):
         return True
     return False
 

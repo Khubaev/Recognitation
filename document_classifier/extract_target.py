@@ -5,7 +5,13 @@ import json
 import re
 from typing import Any, Dict, List
 
-from .invoice_fields import FIELD_LABELS, _is_bad_bank_name, _is_bad_recipient, joined_fields_from_items
+from .invoice_fields import (
+    FIELD_LABELS,
+    _is_bad_bank_name,
+    _is_bad_recipient,
+    is_itogo_amount_in_words,
+    joined_fields_from_items,
+)
 
 
 def _from_nested_invoice_schema(d: Dict[str, Any]) -> Dict[str, Any]:
@@ -301,11 +307,19 @@ def merge_extracted(neural: Dict[str, Any], regex: Dict[str, Any]) -> Dict[str, 
             if k == "Получатель":
                 sup_for_r = (regex.get("Поставщик") or "").strip()
                 out[k] = _merge_party_recipient(ns, rs, sup_for_r)
+            elif _is_bad_recipient(ns) and rs:
+                # Иначе _prefer_longer_party оставляет мусор LLM («Z,N - заказной товар…»)
+                out[k] = rs
             elif ns and rs:
                 out[k] = _prefer_longer_party(ns, rs)
             else:
                 out[k] = ns or rs
             continue
+
+        if k == "Итого":
+            if is_itogo_amount_in_words(ns) and rs:
+                out[k] = rs
+                continue
 
         if isinstance(nv, str) and nv.strip():
             out[k] = nv.strip()
