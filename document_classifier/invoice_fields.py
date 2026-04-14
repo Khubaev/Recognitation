@@ -75,13 +75,17 @@ _RU_MONTH_TO_MM: Dict[str, str] = {
 
 def normalize_date_display_to_ddmmyyyy(s: str) -> str:
     """
-    «13 апреля 2026» → «13.04.2026»; уже числовые даты — с ведущими нулями.
+    «13 апреля 2026» → «13.04.2026»; «2026-04-13» → «13.04.2026»; уже числовые даты — с ведущими нулями.
     Неизвестный формат возвращается как есть (после _norm).
     """
     s = _norm(str(s or "").strip())
     if not s:
         return ""
     s = re.sub(r"\s*г\.?\s*$", "", s, flags=re.I).strip()
+    m_iso = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", s)
+    if m_iso:
+        y, mo, d = m_iso.group(1), m_iso.group(2), m_iso.group(3)
+        return f"{int(d):02d}.{int(mo):02d}.{y}"
     m = re.match(r"^(\d{1,2})[./](\d{1,2})[./](\d{2,4})$", s)
     if m:
         d, mo, y = int(m.group(1)), int(m.group(2)), m.group(3)
