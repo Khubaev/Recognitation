@@ -131,11 +131,41 @@ def normalize_invoice_number_ocr(s: str) -> str:
     return (head + tail.translate(trans))[:120]
 
 
+def _strip_supplier_name_suffix(s: str) -> str:
+    """
+    Убирает слепленный к ФИО/ООО хвост: телефон, банк, БИК, город банка, счёт
+    (часто всё в одной строке без перевода строки).
+    """
+    s = _norm(str(s or "").strip())
+    if not s:
+        return ""
+    cut_at: List[int] = []
+    for pat in (
+        r",\s*тел\.",
+        r"\s+тел\.\s*[\d\+\-\(\)\s]{7,22}",
+        r"\s+СЕВЕРО[-\s]?ЗАПАДНЫЙ\s+БАНК",
+        r"\s+БАНК\s+ПАО",
+        r"\s+ПАО\s+СБЕРБАНК",
+        r"\s+АО\s+БАНК",
+        r"\s+БИК\s*\d{8,9}",
+        r"\s+г\.?\s+[Сс]анкт[-\s]?[Пп]етербург",
+        r"\s+Сч\.?\s*№",
+        r"(?i)банк\s+получателя",
+    ):
+        m = re.search(pat, s)
+        if m:
+            cut_at.append(m.start())
+    if cut_at:
+        s = s[: min(cut_at)].strip()
+    return re.sub(r",\s*$", "", s).strip()
+
+
 def supplier_display_name(supplier_line: str) -> str:
     """
     Из строки поставщика (часто «ООО …, 192249, г., ул. …») оставляет наименование без индекса/адреса.
     """
     s = _trim_party_block(supplier_line or "")
+    s = _strip_supplier_name_suffix(s)
     if not s:
         return ""
     m = re.match(r"^(.+?),\s*\d{6}\b", s)
