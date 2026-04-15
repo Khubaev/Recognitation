@@ -19,6 +19,14 @@ source ~/ft-env/bin/activate
 pip install -r finetune/requirements-finetune.txt
 ```
 
+Для **`build_sft_from_invoices`** (чтение PDF/Excel из папки с разметкой) дополнительно установите зависимости из **корня репозитория** — в чистом `vllm-env` или только с `requirements-finetune.txt` их обычно нет:
+
+```bash
+pip install -r requirements.txt
+```
+
+Минимум для конвертера: `pypdf` или `pymupdf`, `pandas`, `openpyxl`, для старых `.xls` — `xlrd`.
+
 2) Prepare your dataset:
 
 - Copy `finetune/train_sft.sample.jsonl` to `finetune/train_sft.jsonl`.
