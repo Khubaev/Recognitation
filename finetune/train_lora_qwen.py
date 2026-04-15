@@ -4,8 +4,9 @@ import argparse
 import inspect
 
 from datasets import load_dataset
-from peft import LoraConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
+import torch
+from peft import LoraConfig, prepare_model_for_kbit_training
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainingArguments
 from trl import SFTTrainer
 
 
@@ -19,6 +20,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1, help="Per-device train batch size.")
     parser.add_argument("--grad-accum", type=int, default=8, help="Gradient accumulation steps.")
     parser.add_argument("--max-seq-len", type=int, default=2048, help="Maximum training sequence length.")
+    parser.add_argument(
+        "--no-4bit",
+        action="store_true",
+        help="Disable 4-bit base model loading (not recommended on 24GB GPUs).",
+    )
     return parser.parse_args()
 
 
@@ -30,12 +36,25 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype="auto",
-        device_map="auto",
-        trust_remote_code=True,
-    )
+    model_kwargs = {
+        "device_map": "auto",
+        "trust_remote_code": True,
+    }
+    if args.no_4bit:
+        model_kwargs["torch_dtype"] = "auto"
+    else:
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        )
+
+    model = AutoModelForCausalLM.from_pretrained(args.model, **model_kwargs)
+    model.config.use_cache = False
+    if not args.no_4bit:
+        model = prepare_model_for_kbit_training(model)
+    model.gradient_checkpointing_enable()
 
     peft_config = LoraConfig(
         r=16,
@@ -55,6 +74,7 @@ def main() -> None:
         save_steps=200,
         bf16=True,
         optim="paged_adamw_8bit",
+        gradient_checkpointing=True,
         lr_scheduler_type="cosine",
         warmup_ratio=0.03,
         report_to="none",
