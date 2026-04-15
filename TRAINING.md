@@ -74,6 +74,17 @@ py -3 train_extract.py --train data\extract_train.jsonl --out checkpoints\invoic
 
 **Результат:** чекпоинт в `--out` (по умолчанию `checkpoints/invoice_extract`). При валидации Trainer сохраняет лучшую по `eval_loss` эпоху (`load_best_model_at_end`).
 
+### 2.3. Опционально: дообучение Qwen (LoRA) под шаблоны OCR
+
+Для сценария с удаленным vLLM в проект добавлен минимальный набор в каталоге `finetune/`:
+
+- `finetune/train_sft.sample.jsonl` — формат обучающих примеров;
+- `finetune/train_lora_qwen.py` — обучение LoRA адаптера;
+- `finetune/merge_lora.py` — слияние адаптера в полноценную модель;
+- `finetune/README.md` — быстрый запуск.
+
+Важно: `vLLM` используется только для инференса. Дообучение выполняется через `transformers/trl/peft`.
+
 ---
 
 ## 3. Как проверять качество
