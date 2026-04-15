@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -84,8 +85,25 @@ def _normalize_target_fields(raw_fields: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _make_messages(system_prompt: str, text: str, target_obj: Dict[str, Any]) -> Dict[str, Any]:
+def _make_messages(
+    system_prompt: str,
+    text: str,
+    target_obj: Dict[str, Any],
+    *,
+    prompt_style: str,
+) -> Dict[str, Any]:
+    """prompt_style=sft_default — system + OCR; neural_extract — как в prod (EXTRACT_PREFIX + текст, один user)."""
     target_json = json.dumps(target_obj, ensure_ascii=False, separators=(",", ":"))
+    if prompt_style == "neural_extract":
+        from document_classifier.neural_extract import EXTRACT_PREFIX
+
+        user_content = EXTRACT_PREFIX + text
+        return {
+            "messages": [
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": target_json},
+            ],
+        }
     return {
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -113,6 +131,7 @@ def _build_sample(
     text_mode: str,
     system_prompt: str,
     include_silver: bool,
+    prompt_style: str,
 ) -> Optional[Tuple[Dict[str, Any], str]]:
     text = extract_text_from_file(doc_path, text_extract_mode=text_mode)
     if not text.strip():
@@ -122,7 +141,7 @@ def _build_sample(
         return None
     target_raw = sidecar if sidecar is not None else extract_invoice_fields(text)
     target = _normalize_target_fields(target_raw)
-    sample = _make_messages(system_prompt, text, target)
+    sample = _make_messages(system_prompt, text, target, prompt_style=prompt_style)
     source = "sidecar" if sidecar is not None else "silver"
     return sample, source
 
@@ -142,6 +161,25 @@ def parse_args() -> argparse.Namespace:
         "--include-silver",
         action="store_true",
         help="Include files without sidecar json (target from regex heuristics).",
+    )
+    p.add_argument(
+        "--eval-ratio",
+        type=float,
+        default=0.0,
+        help="If >0, hold out this fraction of samples for eval (deterministic shuffle, seed 42).",
+    )
+    p.add_argument(
+        "--out-eval",
+        type=Path,
+        default=Path("finetune/eval_sft.jsonl"),
+        help="Path for eval split when --eval-ratio > 0.",
+    )
+    p.add_argument("--seed", type=int, default=42, help="RNG seed for train/eval split.")
+    p.add_argument(
+        "--prompt-style",
+        choices=("sft_default", "neural_extract"),
+        default="sft_default",
+        help="neural_extract: как в prod (EXTRACT_PREFIX + текст). sft_default: system + OCR.",
     )
     return p.parse_args()
 
@@ -165,6 +203,7 @@ def main() -> None:
                 text_mode=args.text_mode,
                 system_prompt=args.system_prompt,
                 include_silver=args.include_silver,
+                prompt_style=args.prompt_style,
             )
         except Exception as e:
             skipped += 1
@@ -187,13 +226,34 @@ def main() -> None:
             "No samples built. Add sidecar .json labels or use --include-silver for heuristic targets.",
         )
 
+    eval_ratio = max(0.0, min(0.5, float(args.eval_ratio)))
+    train_rows = rows
+    eval_rows: List[Dict[str, Any]] = []
+    if eval_ratio > 0 and len(rows) >= 2:
+        rng = random.Random(args.seed)
+        idx = list(range(len(rows)))
+        rng.shuffle(idx)
+        n_eval = max(1, int(round(len(rows) * eval_ratio)))
+        n_eval = min(n_eval, len(rows) - 1)
+        eval_set = set(idx[:n_eval])
+        train_rows = [rows[i] for i in range(len(rows)) if i not in eval_set]
+        eval_rows = [rows[i] for i in range(len(rows)) if i in eval_set]
+        print(f"Split: train={len(train_rows)}, eval={len(eval_rows)} (ratio≈{eval_ratio})")
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
-        for row in rows:
+        for row in train_rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
+    if eval_rows:
+        args.out_eval.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.out_eval, "w", encoding="utf-8") as f:
+            for row in eval_rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        print(f"Eval saved to {args.out_eval}")
+
     print(
-        f"Saved {len(rows)} samples to {args.out} "
+        f"Saved {len(train_rows)} train samples to {args.out} "
         f"(sidecar={used_sidecar}, silver={used_silver}, skipped={skipped})",
     )
 

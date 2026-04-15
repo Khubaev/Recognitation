@@ -63,6 +63,42 @@ vllm serve finetune/qwen7b-invoice-merged \
   --max-model-len 4096
 ```
 
+## Iteration 1 (sidecar only, train/eval, prod prompt)
+
+Цель: только размеченные `*.json` рядом с документами, без silver-эвристик; промпт как в проде (`EXTRACT_PREFIX`); небольшой eval-сплит и замер по полям после обучения.
+
+1) Собрать датасет (15% на eval, промпт как у vLLM в `neural_extract.py`):
+
+```bash
+python -m finetune.build_sft_from_invoices \
+  --input-dir data/labeled_files/СчетНаОплату \
+  --out finetune/train_sft.jsonl \
+  --out-eval finetune/eval_sft.jsonl \
+  --eval-ratio 0.15 \
+  --prompt-style neural_extract \
+  --text-mode auto
+```
+
+Без `--include-silver` берутся только файлы с sidecar JSON.
+
+2) Обучить LoRA **2 эпохи** (при необходимости уменьшите `--max-seq-len` / увеличьте `--grad-accum` на 24GB):
+
+```bash
+python finetune/train_lora_qwen.py \
+  --data finetune/train_sft.jsonl \
+  --output finetune/qwen7b-invoice-lora \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --epochs 2
+```
+
+3) Слить адаптер и поднять vLLM (см. выше), затем оценить на holdout:
+
+```bash
+python -m finetune.eval_sft_vllm --eval-jsonl finetune/eval_sft.jsonl
+```
+
+Нужны `VLLM_OPENAI_BASE` и `VLLM_MODEL` (или флаги `--base-url` / `--model`). Скрипт печатает совпадения по пяти полям: номер/дата/ИНН поставщика/поставщик/итого.
+
 ## Notes
 
 - vLLM is inference-only. Training happens via `transformers/trl/peft`.
