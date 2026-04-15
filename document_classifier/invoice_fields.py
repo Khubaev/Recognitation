@@ -135,6 +135,130 @@ def normalize_invoice_number_ocr(s: str) -> str:
     return (head + tail.translate(trans))[:120]
 
 
+def _looks_like_russian_federal_subject_only(fragment: str) -> bool:
+    """
+    True, если фрагмент после запятой — по смыслу только субъект РФ (область, край, республика, округ),
+    а не часть наименования организации.
+    """
+    t = _norm(str(fragment or "").strip())
+    if not t or len(t) < 4:
+        return False
+    if re.match(
+        r"(?i)^республика\s+[а-яё\- ]{2,60}$",
+        t,
+    ) or re.match(r"(?i)^[а-яё\-]{2,50}\s+республика\s*$", t):
+        return True
+    if re.search(r"(?i)(?:автономный\s+округ|автономная\s+область|еврейская\s+автономная)", t):
+        return True
+    if re.search(r"(?i)(?:область|край|респ\.?)\s*$", t):
+        words = t.split()
+        if len(words) >= 2:
+            return True
+    return False
+
+
+def _strip_trailing_russian_subject(s: str) -> str:
+    """
+    Убирает с конца наименования «лишний» субъект РФ без запятой
+    (например «… Митрофанова … Ленинградская область»).
+    """
+    s = _norm(str(s or "").strip())
+    if not s:
+        return ""
+    for _ in range(6):
+        prev = s
+        m = re.search(
+            r"(?i),\s*(?:[«»\"]?\s*)[А-ЯЁа-яё0-9\-]{1,50}(?:\s+[А-ЯЁа-яё0-9\-]+){0,3}\s*"
+            r"(?:область|край|республика|автономная\s+область|автономный\s+округ)\s*[«»\"]?\s*$",
+            s,
+        )
+        if m:
+            s = s[: m.start()].rstrip(",; ").strip()
+            continue
+        m = re.search(
+            r"(?i)\s+[А-ЯЁа-яё\-]+(?:\s+[А-ЯЁа-яё\-]+){0,2}\s+(?:область|край)\s*$",
+            s,
+        )
+        if m:
+            s = s[: m.start()].strip()
+            continue
+        m = re.search(r"(?i)(,\s*)республика\s+[А-ЯЁа-яё\-]+(?:\s+[А-ЯЁа-яё\-]+){0,3}\s*$", s)
+        if m:
+            s = s[: m.start(1)].rstrip(",; ").strip()
+            continue
+        if s == prev:
+            break
+    return s
+
+
+def _strip_supplier_ocr_noise(s: str) -> str:
+    """
+    Убирает типичный мусор OCR/склейки в наименовании: длинные числа (р/с, ОГРНИП),
+    битые «…енинградская область», лишние переводы строк внутри фразы.
+    """
+    s = _norm(str(s or "").strip())
+    if not s:
+        return ""
+    s = re.sub(r"[\r\n]+", " ", s)
+    s = re.sub(r"\s+\d{10,}\s*", " ", s)
+    s = re.sub(r"^\d{10,}\s*", "", s)
+    # «енинградская область», «…градская область» с опечатками OCR
+    s = re.sub(
+        r"(?i)\s+[а-яё\-]{0,8}енинградск[а-яё\-]*\s+область.*$",
+        "",
+        s,
+    )
+    s = re.sub(
+        r"(?i)\s+[а-яё\-]{4,25}градск[а-яё\-]*\s+область\s*$",
+        "",
+        s,
+    )
+    s = re.sub(r"(?i)\s+фанова\s+АТЕЛЬ\s*", " ", s)
+    s = _norm(s)
+    return s.strip()
+
+
+def _prefer_short_party_head_if_tail_garbage(s: str) -> str:
+    """
+    Если начало похоже на ИП/ООО/ФИО, а дальше явный мусор — оставляем только голову.
+    """
+    s = _norm(str(s or "").strip())
+    if not s:
+        return ""
+    tail_garbage = re.compile(
+        r"(?i)(?:\d{6,}|область|край|фанова|АТЕЛЬ|енинград|р[/\\]?с|к[/\\]?с|сч\.?\s*№)",
+    )
+    m_ip = re.match(
+        r"(?i)^((?:ИП|И\.П\.)\s+[А-ЯЁа-яё\-]+(?:\s+[А-ЯЁа-яё\-]+){1,3})\b",
+        s,
+    )
+    if m_ip:
+        rest = s[m_ip.end() :].strip()
+        if rest and tail_garbage.search(rest):
+            return m_ip.group(1).strip()
+    m_ooo = re.match(
+        r"(?i)^((?:ООО|АО|ПАО|ЗАО|НАО)\s+[«\"]?[А-ЯЁа-яё0-9\-\s]{2,120}[»\"]?(?:\s+[«\"][^»\"]+[»\"])?)\b",
+        s,
+    )
+    if m_ooo:
+        rest = s[m_ooo.end() :].strip()
+        if rest and (tail_garbage.search(rest) or re.match(r"^\d", rest)):
+            return m_ooo.group(1).strip()
+    m_fio = re.match(
+        r"^([А-ЯЁ][а-яё\-]{1,40}\s+[Тт]\.\s*[А-ЯЁа-яё]\.?)(?=\s|\Z)",
+        s,
+    )
+    if m_fio:
+        rest = s[m_fio.end() :].strip()
+        if rest and (
+            tail_garbage.search(rest)
+            or re.match(r"^\d", rest)
+            or len(rest.split()) > 8
+        ):
+            return m_fio.group(1).strip()
+    return s
+
+
 def _strip_supplier_name_suffix(s: str) -> str:
     """
     Убирает слепленный к ФИО/ООО хвост: телефон, банк, БИК, город банка, счёт
@@ -176,9 +300,21 @@ def supplier_display_name(supplier_line: str) -> str:
     Из строки поставщика (часто «ООО …, 192249, г., ул. …») оставляет наименование без индекса/адреса.
     """
     s = _trim_party_block(supplier_line or "")
+    s = _strip_supplier_ocr_noise(s)
+    s = _prefer_short_party_head_if_tail_garbage(s)
     s = _strip_supplier_name_suffix(s)
+    s = _strip_trailing_russian_subject(s)
     if not s:
         return ""
+    parts_region = [p.strip() for p in s.split(",") if p.strip()]
+    if len(parts_region) >= 2:
+        kept_r: List[str] = []
+        for p in parts_region:
+            if _looks_like_russian_federal_subject_only(p):
+                break
+            kept_r.append(p)
+        if kept_r:
+            s = ", ".join(kept_r)
     m = re.match(r"^(.+?),\s*\d{6}\b", s)
     if m and len(m.group(1).strip()) > 3:
         return _norm(m.group(1).strip())[:500]

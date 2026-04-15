@@ -9,6 +9,10 @@
   режим извлечения на эти форматы не влияет.
 
 Yandex Cloud: ``OCR_YANDEX_*`` (см. ``_ocr_bytes_yandex`` / ``_ocr_pdf_yandex``).
+
+После классификации и извлечения реквизитов наименование поставщика для API
+нормализуется в ``invoice_fields.supplier_display_name`` (срез типичного мусора OCR:
+длинные числа, битые фрагменты региона, склейки строк).
 """
 from __future__ import annotations
 
