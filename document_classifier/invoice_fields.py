@@ -363,6 +363,18 @@ def _extract_invoice_number(text: str) -> str:
     head = text[:4000] if text else ""
     num_mark = r"(?:№|N(?:[oо°]\.?)?)"
     num_token = r"([\dA-Za-zА-Яа-яЁё][\dA-Za-zА-Яа-яЁё\-/–— ]{0,48})"
+    # Для оферт Ozon: «Счет-Оферта № 0241012090-0003 от 16.02.2026»
+    m = re.search(
+        rf"(?:Сч[её]т[-\s]?Оферта|Счет[-\s]?Оферта)\s*{num_mark}\s*([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9\-/–— ]{{1,48}})",
+        head,
+        re.I,
+    )
+    if m:
+        s = _norm(m.group(1)).strip()
+        s = re.split(r"\s+от\s+", s, maxsplit=1, flags=re.I)[0].strip()
+        s = normalize_invoice_number_ocr(s[:120])
+        if not _is_bad_invoice_number_candidate(s):
+            return s
     # Сначала явный заголовок документа — не путать с «Сч. №» банковского счёта (20 цифр)
     m = re.search(
         rf"(?:Сч[её]т|СЧЕТ)\s+на\s+оплату\s*{num_mark}\s*{num_token}",
@@ -372,8 +384,9 @@ def _extract_invoice_number(text: str) -> str:
     if m:
         s = _norm(m.group(1)).strip()
         s = re.split(r"\s+от\s+", s, maxsplit=1, flags=re.I)[0].strip()
-        if s and not _is_likely_bank_rs_number(s):
-            return normalize_invoice_number_ocr(s[:120])
+        s = normalize_invoice_number_ocr(s[:120])
+        if not _is_bad_invoice_number_candidate(s):
+            return s
     # Между «Счёт» и «№» может быть длинная фраза (залог, тара и т.д.)
     m = re.search(
         rf"(?:Сч[её]т|СЧЕТ)\s+[^\n]{{0,400}}?{num_mark}\s*{num_token}(?:\s+от\b|\s*\n|$)",
@@ -383,8 +396,9 @@ def _extract_invoice_number(text: str) -> str:
     if m:
         s = _norm(m.group(1)).strip()
         s = re.split(r"\s+от\s+", s, maxsplit=1, flags=re.I)[0].strip()
-        if not _is_likely_bank_rs_number(s):
-            return normalize_invoice_number_ocr(s[:120])
+        s = normalize_invoice_number_ocr(s[:120])
+        if not _is_bad_invoice_number_candidate(s):
+            return s
     m = re.search(
         rf"(?:Сч[её]т|СЧЕТ)(?:\s+на\s+оплату)?\s*{num_mark}\s*([^\n]+?)(?:\s+от\s+|\n|$)",
         head,
@@ -393,13 +407,15 @@ def _extract_invoice_number(text: str) -> str:
     if m:
         s = _norm(m.group(1))
         s = re.split(r"\s+от\s+", s, maxsplit=1, flags=re.I)[0].strip()
-        if not _is_likely_bank_rs_number(s):
-            return normalize_invoice_number_ocr(s[:120])
+        s = normalize_invoice_number_ocr(s[:120])
+        if not _is_bad_invoice_number_candidate(s):
+            return s
     m = re.search(rf"(?:^|\n)\s*{num_mark}\s*(\d[\d\w\-/–—]*)\s+от\s+", head, re.I)
     if m:
         cand = m.group(1).strip()
-        if not _is_likely_bank_rs_number(cand):
-            return normalize_invoice_number_ocr(cand[:120])
+        cand = normalize_invoice_number_ocr(cand[:120])
+        if not _is_bad_invoice_number_candidate(cand):
+            return cand
     # Буквенно-цифровой номер (напр. СКЗ00021097) рядом со «Счёт … №»
     m = re.search(
         rf"(?:Сч[её]т|СЧЕТ)[^\n]{{0,200}}?{num_mark}\s*([A-Za-zА-Яа-яЁё]{{1,12}}[\dA-Za-zА-Яа-яЁё\-/–—]*)",
@@ -409,7 +425,9 @@ def _extract_invoice_number(text: str) -> str:
     if m:
         s = _norm(m.group(1)).strip()
         s = re.split(r"\s+", s)[0] if s else ""
-        return normalize_invoice_number_ocr(s[:120])
+        s = normalize_invoice_number_ocr(s[:120])
+        if not _is_bad_invoice_number_candidate(s):
+            return s
     m = re.search(
         rf"(?:^|\n)\s*{num_mark}\s*([A-Za-zА-Яа-яЁё]{{1,12}}[\dA-Za-zА-Яа-яЁё\-/–—]*)(?:\s+от\s+|\s*\n|$)",
         head,
@@ -417,7 +435,19 @@ def _extract_invoice_number(text: str) -> str:
     )
     if m:
         s = _norm(m.group(1)).strip().split()[0]
-        return normalize_invoice_number_ocr(s[:120])
+        s = normalize_invoice_number_ocr(s[:120])
+        if not _is_bad_invoice_number_candidate(s):
+            return s
+    # Ozon и похожие: «Оплата по заказу 0241012090-0003 от ...»
+    m = re.search(
+        r"(?:Оплата\s+по\s+заказу|Заказ)\s*[:\s]*([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9\-/–—]{3,48})\s+от\s+\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}",
+        head,
+        re.I,
+    )
+    if m:
+        s = normalize_invoice_number_ocr(_norm(m.group(1)).strip()[:120])
+        if not _is_bad_invoice_number_candidate(s):
+            return s
     return ""
 
 
@@ -710,6 +740,8 @@ def _looks_like_party_name(s: str) -> bool:
     if not t:
         return False
     if re.match(r"(?i)^(?:ООО|АО|ПАО|ЗАО|НАО|ОАО|ИП|И\.П\.)\b", t):
+        return True
+    if re.search(r"(?i)(?:,\s*|\s+)(?:ООО|АО|ПАО|ЗАО|НАО|ОАО)\s*$", t):
         return True
     if re.match(
         r"^[А-ЯЁ][а-яё\-]{2,40}\s+[А-ЯЁ][а-яё\-]{1,40}(?:\s+[А-ЯЁ][а-яё\-]{1,40})?$",
@@ -1296,6 +1328,9 @@ def extract_invoice_fields(text: str) -> Dict[str, Any]:
         supplier = ""
     if not supplier.strip() and inn_sup:
         supplier = _entity_name_near_inn(full, inn_sup) or supplier
+    if not supplier.strip() and recipient.strip() and _looks_like_party_name(recipient):
+        # Частый шаблон маркетплейсов: «Получатель» содержит юрлицо-продавца.
+        supplier = _trim_party_block(recipient)
 
     out: Dict[str, Any] = {
         "Банк получателя": bank,
