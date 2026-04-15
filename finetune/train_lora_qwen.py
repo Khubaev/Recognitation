@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 
 from datasets import load_dataset
 from peft import LoraConfig
@@ -59,13 +60,17 @@ def main() -> None:
         report_to="none",
     )
 
-    trainer = SFTTrainer(
-        model=model,
-        train_dataset=dataset,
-        peft_config=peft_config,
-        args=train_args,
-        max_seq_length=args.max_seq_len,
-    )
+    trainer_kwargs = {
+        "model": model,
+        "train_dataset": dataset,
+        "peft_config": peft_config,
+        "args": train_args,
+    }
+    # Compatibility across TRL versions: some versions dropped max_seq_length in SFTTrainer.__init__.
+    sig = inspect.signature(SFTTrainer.__init__)
+    if "max_seq_length" in sig.parameters:
+        trainer_kwargs["max_seq_length"] = args.max_seq_len
+    trainer = SFTTrainer(**trainer_kwargs)
     trainer.train()
     trainer.model.save_pretrained(args.output)
     tokenizer.save_pretrained(args.output)
