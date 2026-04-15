@@ -132,7 +132,11 @@ def normalize_invoice_number_ocr(s: str) -> str:
             "I": "1",
         },
     )
-    return (head + tail.translate(trans))[:120]
+    out = head + tail.translate(trans)
+    # OCR часто вставляет пробелы вокруг тире в номере: «Б - 00236948» -> «Б-00236948».
+    out = re.sub(r"\s*[-–—]\s*", "-", out)
+    out = re.sub(r"\s+", " ", out).strip()
+    return out[:120]
 
 
 def _looks_like_russian_federal_subject_only(fragment: str) -> bool:
@@ -357,9 +361,11 @@ def _is_likely_bank_rs_number(s: str) -> bool:
 def _extract_invoice_number(text: str) -> str:
     """Номер счёта в шапке: «Счёт на оплату № 13», «СЧЕТ НА ЗАЛОГ … № 5717 от»."""
     head = text[:4000] if text else ""
+    num_mark = r"(?:№|N(?:[oо°]\.?)?)"
+    num_token = r"([\dA-Za-zА-Яа-яЁё][\dA-Za-zА-Яа-яЁё\-/–— ]{0,48})"
     # Сначала явный заголовок документа — не путать с «Сч. №» банковского счёта (20 цифр)
     m = re.search(
-        r"(?:Сч[её]т|СЧЕТ)\s+на\s+оплату\s*(?:№|N[oо]\.?)\s*([\dA-Za-zА-Яа-яЁё0-9][\dA-Za-zА-Яа-яЁё\-/]*)",
+        rf"(?:Сч[её]т|СЧЕТ)\s+на\s+оплату\s*{num_mark}\s*{num_token}",
         head,
         re.I,
     )
@@ -370,7 +376,7 @@ def _extract_invoice_number(text: str) -> str:
             return normalize_invoice_number_ocr(s[:120])
     # Между «Счёт» и «№» может быть длинная фраза (залог, тара и т.д.)
     m = re.search(
-        r"(?:Сч[её]т|СЧЕТ)\s+[^\n]{0,400}?(?:№|N[oо]\.?)\s*([\dA-Za-zА-Яа-яЁё][\dA-Za-zА-Яа-яЁё\-/]*)(?:\s+от\b|\s*\n|$)",
+        rf"(?:Сч[её]т|СЧЕТ)\s+[^\n]{{0,400}}?{num_mark}\s*{num_token}(?:\s+от\b|\s*\n|$)",
         head,
         re.I,
     )
@@ -380,7 +386,7 @@ def _extract_invoice_number(text: str) -> str:
         if not _is_likely_bank_rs_number(s):
             return normalize_invoice_number_ocr(s[:120])
     m = re.search(
-        r"(?:Сч[её]т|СЧЕТ)(?:\s+на\s+оплату)?\s*(?:№|N[oо]\.?)\s*([^\n]+?)(?:\s+от\s+|\n|$)",
+        rf"(?:Сч[её]т|СЧЕТ)(?:\s+на\s+оплату)?\s*{num_mark}\s*([^\n]+?)(?:\s+от\s+|\n|$)",
         head,
         re.I,
     )
@@ -389,14 +395,14 @@ def _extract_invoice_number(text: str) -> str:
         s = re.split(r"\s+от\s+", s, maxsplit=1, flags=re.I)[0].strip()
         if not _is_likely_bank_rs_number(s):
             return normalize_invoice_number_ocr(s[:120])
-    m = re.search(r"(?:^|\n)\s*№\s*(\d[\d\w\-/]*)\s+от\s+", head, re.I)
+    m = re.search(rf"(?:^|\n)\s*{num_mark}\s*(\d[\d\w\-/–—]*)\s+от\s+", head, re.I)
     if m:
         cand = m.group(1).strip()
         if not _is_likely_bank_rs_number(cand):
             return normalize_invoice_number_ocr(cand[:120])
     # Буквенно-цифровой номер (напр. СКЗ00021097) рядом со «Счёт … №»
     m = re.search(
-        r"(?:Сч[её]т|СЧЕТ)[^\n]{0,200}?(?:№|N[oо]\.?)\s*([A-Za-zА-Яа-яЁё]{1,12}[\dA-Za-zА-Яа-яЁё\-/]*)",
+        rf"(?:Сч[её]т|СЧЕТ)[^\n]{{0,200}}?{num_mark}\s*([A-Za-zА-Яа-яЁё]{{1,12}}[\dA-Za-zА-Яа-яЁё\-/–—]*)",
         head,
         re.I,
     )
@@ -405,7 +411,7 @@ def _extract_invoice_number(text: str) -> str:
         s = re.split(r"\s+", s)[0] if s else ""
         return normalize_invoice_number_ocr(s[:120])
     m = re.search(
-        r"(?:^|\n)\s*№\s*([A-Za-zА-Яа-яЁё]{1,12}[\dA-Za-zА-Яа-яЁё\-/]*)(?:\s+от\s+|\s*\n|$)",
+        rf"(?:^|\n)\s*{num_mark}\s*([A-Za-zА-Яа-яЁё]{{1,12}}[\dA-Za-zА-Яа-яЁё\-/–—]*)(?:\s+от\s+|\s*\n|$)",
         head,
         re.I,
     )
@@ -452,32 +458,53 @@ def _extract_invoice_date(text: str) -> str:
     return ""
 
 
+def _normalize_total_amount_candidate(raw: str) -> str:
+    """
+    Нормализует сумму после метки «Итого/К оплате».
+    Если OCR/текстовый слой дал несколько чисел подряд (например «528\\n340 675,00»),
+    выбираем наиболее правдоподобную денежную сумму.
+    """
+    s = (raw or "").replace("\xa0", " ").strip()
+    if not s:
+        return ""
+    # Вытаскиваем все числовые фрагменты; \s не используем, чтобы не склеивать через переносы.
+    parts = re.findall(r"\d[\d \t]*(?:[,.]\d{2})?", s)
+    if not parts:
+        return ""
+    cleaned = [re.sub(r"[ \t]+", "", p) for p in parts if p and re.search(r"\d", p)]
+    if not cleaned:
+        return ""
+    with_decimals = [p for p in cleaned if re.search(r"[,.]\d{2}$", p)]
+    pool = with_decimals if with_decimals else cleaned
+    # Берём самый «длинный» денежный кандидат (по количеству цифр), при равенстве — последний.
+    best = max(pool, key=lambda x: (len(re.sub(r"\D", "", x)), pool.index(x)))
+    return best[:32]
+
+
 def _extract_itogo_total(text: str) -> str:
     """Итоговая сумма к оплате (не сумма строки таблицы)."""
     t = text or ""
     # Если есть итог "с НДС", он приоритетнее обычного "Итого"
     for pat in (
-        r"(?:Итого|Всего)\s+с\s+НДС\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)",
-        r"(?:Сумма|Итого)\s+с\s+НДС\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)",
+        r"(?:Итого|Всего)\s+с\s+НДС\s*[:\s]*([\d \t\u00a0\r\n]+(?:[,.]\d{2})?)",
+        r"(?:Сумма|Итого)\s+с\s+НДС\s*[:\s]*([\d \t\u00a0\r\n]+(?:[,.]\d{2})?)",
     ):
         m = re.search(pat, t, re.I)
         if m:
-            s = m.group(1).replace("\xa0", " ").strip()
-            s = re.sub(r"\s+", "", s)
+            s = _normalize_total_amount_candidate(m.group(1))
             return s[:32]
 
     for pat in (
         # «ИТОГО К ОПЛАТЕ: 8 858,00» — раньше ловилось только «Итого» и ломалось на «К ОПЛАТЕ»
-        r"(?:Итого\s+к\s+оплате)\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)\s*(?:руб|₽)?",
-        r"(?:Итого|Всего\s+к\s+оплате|К\s+оплате)\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)\s*(?:руб|₽)?",
-        r"(?:Всего)\s+(?:наименований\s+\d+\s+)?на\s+сумму\s+([\d\s\u00a0]+(?:[,.]\d{2})?)",
-        r"(?:Сумма|Итого)\s+по\s+сч[её]ту\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)",
-        r"(?:К\s+оплате|Оплатить)\s*[:\s]*([\d\s\u00a0]+(?:[,.]\d{2})?)\s*(?:руб|₽)?",
+        r"(?:Итого\s+к\s+оплате)\s*[:\s]*([\d \t\u00a0\r\n]+(?:[,.]\d{2})?)\s*(?:руб|₽)?",
+        r"(?:Итого|Всего\s+к\s+оплате|К\s+оплате)\s*[:\s]*([\d \t\u00a0\r\n]+(?:[,.]\d{2})?)\s*(?:руб|₽)?",
+        r"(?:Всего)\s+(?:наименований\s+\d+\s+)?на\s+сумму\s+([\d \t\u00a0\r\n]+(?:[,.]\d{2})?)",
+        r"(?:Сумма|Итого)\s+по\s+сч[её]ту\s*[:\s]*([\d \t\u00a0\r\n]+(?:[,.]\d{2})?)",
+        r"(?:К\s+оплате|Оплатить)\s*[:\s]*([\d \t\u00a0\r\n]+(?:[,.]\d{2})?)\s*(?:руб|₽)?",
     ):
         m = re.search(pat, t, re.I)
         if m:
-            s = m.group(1).replace("\xa0", " ").strip()
-            s = re.sub(r"\s+", "", s)
+            s = _normalize_total_amount_candidate(m.group(1))
             return s[:32]
     return ""
 
@@ -674,6 +701,40 @@ def _is_bad_recipient(s: str) -> bool:
     return False
 
 
+def _looks_like_party_name(s: str) -> bool:
+    """
+    Похоже на название контрагента: юрформа (ООО/ИП/АО/ПАО...) или ФИО.
+    Нужен для случаев, когда в строке есть адресный хвост и _is_bad_recipient=True.
+    """
+    t = _norm(str(s or "").strip())
+    if not t:
+        return False
+    if re.match(r"(?i)^(?:ООО|АО|ПАО|ЗАО|НАО|ОАО|ИП|И\.П\.)\b", t):
+        return True
+    if re.match(
+        r"^[А-ЯЁ][а-яё\-]{2,40}\s+[А-ЯЁ][а-яё\-]{1,40}(?:\s+[А-ЯЁ][а-яё\-]{1,40})?$",
+        t,
+    ):
+        return True
+    if re.match(r"^[А-ЯЁ][а-яё\-]{2,40}\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.?$", t):
+        return True
+    return False
+
+
+def _is_bad_invoice_number_candidate(s: str) -> bool:
+    """Явно плохой номер счёта: пусто/односимвольный/без цифр/слишком длинный."""
+    t = _norm(str(s or "").strip())
+    if not t:
+        return True
+    if len(t) < 2 or len(t) > 40:
+        return True
+    if not re.search(r"\d", t):
+        return True
+    if _is_likely_bank_rs_number(t):
+        return True
+    return False
+
+
 def _first_bank_line_from_block(block: str) -> str:
     """После «Банк получателя» часто идут ИНН/КПП — пропускаем, ищем строку с названием."""
     for ln in block.split("\n"):
@@ -848,8 +909,10 @@ def _entity_name_near_inn(text: str, inn: str) -> str:
         if inn in rest:
             line = _norm(m.group(1).replace("\n", " ").strip())
             line = line.split(";")[0].strip()
-            if len(line) > 2 and not _is_bad_recipient(line):
-                return _trim_party_block(line)[:500]
+            if len(line) > 2:
+                trimmed = _trim_party_block(line)
+                if trimmed and (not _is_bad_recipient(trimmed) or _looks_like_party_name(trimmed)):
+                    return trimmed[:500]
     for m in re.finditer(
         rf"(?:ИНН|Инн)\s*[/]?\s*(?:КПП\s*)?[:\s]*{re.escape(inn)}(?:\D|$)",
         t,
@@ -862,8 +925,10 @@ def _entity_name_near_inn(text: str, inn: str) -> str:
             re.I,
         ):
             line = _norm(pm.group(1).split("\n")[0])
-            if len(line) > 2 and not _is_bad_recipient(line):
-                return _trim_party_block(line)[:500]
+            if len(line) > 2:
+                trimmed = _trim_party_block(line)
+                if trimmed and (not _is_bad_recipient(trimmed) or _looks_like_party_name(trimmed)):
+                    return trimmed[:500]
     return ""
 
 
@@ -1275,6 +1340,23 @@ def enrich_fields_from_regex_fallback(text: str, fields: Dict[str, Any]) -> Dict
             out[k] = v
         elif not isinstance(v, str) and str(v).strip():
             out[k] = v
+    # Нейросеть может вернуть непустой, но «битый» поставщик после OCR (цифры/адрес/регионный хвост).
+    cur_supplier = str(out.get("Поставщик") or "").strip()
+    rx_supplier = str(rx.get("Поставщик") or "").strip()
+    cur_name = supplier_display_name(cur_supplier)
+    bad_cur_supplier = (
+        not cur_name
+        or bool(re.search(r"\d{10,}", cur_supplier))
+        or bool(re.search(r"(?i)\b(область|край|республика)\b", cur_supplier))
+        or bool(re.search(r"(?i)\b(ул\.?|улица|дом|кв\.|пом\.|корп\.?)\b", cur_supplier))
+    )
+    if bad_cur_supplier and rx_supplier:
+        out["Поставщик"] = rx_supplier
+
+    cur_inv = str(out.get("Номер счета") or "").strip()
+    rx_inv = str(rx.get("Номер счета") or "").strip()
+    if _is_bad_invoice_number_candidate(cur_inv) and rx_inv and not _is_bad_invoice_number_candidate(rx_inv):
+        out["Номер счета"] = rx_inv
     if not out.get("items") and rx.get("items"):
         out["items"] = list(rx["items"])
     return out
