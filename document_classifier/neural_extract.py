@@ -149,7 +149,8 @@ class VllmNeuralFieldExtractor:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": mnt,
             "temperature": 0,
-            "guided_json": EXTRACT_JSON_SCHEMA,
+            # guided_json включить после переобучения на новом датасете с 5 полями
+            # "guided_json": EXTRACT_JSON_SCHEMA,
         }
         r = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
         r.raise_for_status()
