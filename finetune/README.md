@@ -37,11 +37,15 @@ pip install -r requirements.txt
 python finetune/build_sft_from_invoices.py \
   --input-dir data/labeled_files/СчетНаОплату \
   --out finetune/train_sft.jsonl \
+  --out-eval finetune/eval_sft.jsonl \
+  --eval-ratio 0.15 \
   --text-mode auto
 ```
 
-By default the converter uses only files with sidecar `*.json` labels.
-Add `--include-silver` to include unlabeled files with heuristic targets.
+By default the converter uses only files with sidecar `*.json` labels and
+builds the dataset with `--prompt-style neural_extract` (matches the production
+prompt in `neural_extract.py`). Add `--include-silver` to include unlabeled
+files with heuristic targets.
 
 3) Train LoRA:
 
@@ -51,6 +55,8 @@ python finetune/train_lora_qwen.py \
   --output finetune/qwen7b-invoice-lora \
   --model Qwen/Qwen2.5-7B-Instruct
 ```
+
+Defaults: 5 epochs, lr=1e-4, grad-accum=16, LoRA r=32/alpha=64.
 
 4) Merge LoRA into standalone model:
 
@@ -89,15 +95,16 @@ python -m finetune.build_sft_from_invoices \
 
 Без `--include-silver` берутся только файлы с sidecar JSON.
 
-2) Обучить LoRA **2 эпохи** (при необходимости уменьшите `--max-seq-len` / увеличьте `--grad-accum` на 24GB):
+2) Обучить LoRA (при необходимости уменьшите `--max-seq-len` / увеличьте `--grad-accum` на 24GB):
 
 ```bash
 python finetune/train_lora_qwen.py \
   --data finetune/train_sft.jsonl \
   --output finetune/qwen7b-invoice-lora \
-  --model Qwen/Qwen2.5-7B-Instruct \
-  --epochs 2
+  --model Qwen/Qwen2.5-7B-Instruct
 ```
+
+Запускается с дефолтами: 5 эпох, lr=1e-4, grad-accum=16, LoRA r=32/alpha=64.
 
 3) Слить адаптер и поднять vLLM (см. выше), затем оценить на holdout:
 

@@ -15,10 +15,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data", default="finetune/train_sft.jsonl", help="Path to training jsonl (messages format).")
     parser.add_argument("--output", default="finetune/qwen7b-invoice-lora", help="Output directory for LoRA adapter.")
     parser.add_argument("--model", default="Qwen/Qwen2.5-7B-Instruct", help="Base model id/path.")
-    parser.add_argument("--epochs", type=float, default=3.0, help="Number of training epochs.")
-    parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate.")
+    parser.add_argument("--epochs", type=float, default=5.0, help="Number of training epochs.")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
     parser.add_argument("--batch-size", type=int, default=1, help="Per-device train batch size.")
-    parser.add_argument("--grad-accum", type=int, default=8, help="Gradient accumulation steps.")
+    parser.add_argument("--grad-accum", type=int, default=16, help="Gradient accumulation steps.")
     parser.add_argument("--max-seq-len", type=int, default=2048, help="Maximum training sequence length.")
     parser.add_argument(
         "--no-4bit",
@@ -57,8 +57,8 @@ def main() -> None:
     model.gradient_checkpointing_enable()
 
     peft_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
+        r=32,
+        lora_alpha=64,
         lora_dropout=0.05,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         task_type="CAUSAL_LM",

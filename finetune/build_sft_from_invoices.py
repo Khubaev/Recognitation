@@ -178,8 +178,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--prompt-style",
         choices=("sft_default", "neural_extract"),
-        default="sft_default",
-        help="neural_extract: как в prod (EXTRACT_PREFIX + текст). sft_default: system + OCR.",
+        default="neural_extract",
+        help="neural_extract: как в prod (EXTRACT_PREFIX + текст) — рекомендуется. sft_default: system + OCR.",
     )
     return p.parse_args()
 
