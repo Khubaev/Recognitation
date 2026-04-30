@@ -12,7 +12,9 @@
 - EXTRACT_MAX_NEW_TOKENS — макс. длина ответа (по умолчанию 320).
 - EXTRACT_MAX_INPUT_CHARS — обрезка текста документа (по умолчанию 6000).
 
-vLLM: ``VLLM_TIMEOUT_SEC`` (сек., по умолчанию 120), ``VLLM_API_KEY`` (Bearer, если нужен).
+vLLM: ``VLLM_TIMEOUT_SEC`` (сек., по умолчанию 120), ``VLLM_API_KEY`` (Bearer, если нужен),
+``VLLM_MAX_INPUT_CHARS`` (по умолчанию 30000; отдельный лимит для LLM-ветки),
+``VLLM_MAX_TOKENS`` (макс. длина ответа для vLLM, по умолчанию берётся из EXTRACT_MAX_NEW_TOKENS).
 """
 from __future__ import annotations
 
@@ -145,8 +147,13 @@ class VllmNeuralFieldExtractor:
             )
         self.api_key = (os.environ.get("VLLM_API_KEY") or "").strip()
         self.timeout = float(os.environ.get("VLLM_TIMEOUT_SEC", "120"))
-        self.max_input_chars = max(1000, int(os.environ.get("EXTRACT_MAX_INPUT_CHARS", "6000")))
-        self._max_new_tokens = max(64, int(os.environ.get("EXTRACT_MAX_NEW_TOKENS", "320")))
+        # Для vLLM используем отдельный лимит входа, чтобы не наследовать
+        # seq2seq-ориентированное ограничение EXTRACT_MAX_INPUT_CHARS.
+        self.max_input_chars = max(2000, int(os.environ.get("VLLM_MAX_INPUT_CHARS", "30000")))
+        self._max_new_tokens = max(
+            64,
+            int(os.environ.get("VLLM_MAX_TOKENS", os.environ.get("EXTRACT_MAX_NEW_TOKENS", "320"))),
+        )
 
     def extract(self, text: str, max_new_tokens: Optional[int] = None) -> Dict[str, Any]:
         import requests
